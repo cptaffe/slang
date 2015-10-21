@@ -165,36 +165,36 @@ class Lexer : IEnumerable<Token> {
   }
 }
 
+struct SyntaxTree {
+  public Token tok;
+  public List<SyntaxTree> children;
+
+  public SyntaxTree(Token t) {
+    tok = t;
+    children = new List<SyntaxTree>();
+  }
+
+  public void Add(SyntaxTree t) {
+    children.Add(t);
+  }
+
+  override public string ToString() {
+    string s = "";
+    s += tok;
+    if (children.Count > 0) {
+      s += "{";
+      foreach (var t in children) {
+        s += t+", ";
+      }
+      s += "}";
+    }
+    return s;
+  }
+}
+
 class Parser {
   IEnumerable<Token> _toks;
   IEnumerator<Token> _toke;
-
-  public struct SyntaxTree {
-    public Token tok;
-    public List<SyntaxTree> children;
-
-    public SyntaxTree(Token t) {
-      tok = t;
-      children = new List<SyntaxTree>();
-    }
-
-    public void Add(SyntaxTree t) {
-      children.Add(t);
-    }
-
-    override public string ToString() {
-      string s = "";
-      s += tok;
-      if (children.Count > 0) {
-        s += "{";
-        foreach (var t in children) {
-          s += t+", ";
-        }
-        s += "}";
-      }
-      return s;
-    }
-  }
 
   SyntaxTree _root;
   BlockingCollection<SyntaxTree> _trees;
