@@ -256,7 +256,14 @@ class Parser {
 }
 
 class Lang {
+  static IEnumerable<char> ReadChars() {
+    string line;
+    while ((line = Console.ReadLine()) != null) {
+      foreach (var c in line) yield return c;
+    }
+  }
+
   static void Main(string[] args) {
-    new Parser(new Lexer("3*5 + 4 * 8\n"));
+    new Parser(new Lexer(ReadChars()));
   }
 }
