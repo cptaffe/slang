@@ -120,7 +120,9 @@ class Lexer : IEnumerable<Token> {
       string s = Buffer();
       Token.Position pos = _currentBuffer.ToArray()[0].pos;
       Clear();
-      return new Token(){ str = s, pos = pos, type = type };
+      var t = new Token(){ str = s, pos = pos, type = type };
+      Console.WriteLine("tok: "+t);
+      return t;
     }
 
     public int Count() {
@@ -151,38 +153,73 @@ class Lexer : IEnumerable<Token> {
     return WhiteSpaceStateFactory(ExpressionState);
   }
 
+  StateFunc MaybeDotState(Scanner s) {
+    if (s.Peek() == '.') {
+      _toks.Add(s.Emit(Token.Type.Operator));
+      return WhiteSpaceStateFactory(IdentStateFuncFactory(false));
+    } else return WhiteSpaceStateFactory(ExpressionState);
+  }
+
+  StateFunc IdentStateFuncFactory(bool orKeyword) {
+    return delegate(Scanner s) {
+      s.NextWhile(IsIdent);
+      // Have lexed Ident.
+      string id = s.Buffer();
+      if (id.Length == 0) throw new Exception("Expected Ident, found nothing");
+      // Keywords
+      string[] keywords = {
+        "as"
+      };
+      if (Array.IndexOf(keywords, id) != -1) {
+        if (orKeyword) {
+          s.BackAll();
+          return KeywordState;
+        } else throw new Exception("Expected Ident, found reserved word '"+id+"'");
+      } else {
+        _toks.Add(s.Emit(Token.Type.Identifier));
+        return WhiteSpaceStateFactory(MaybeDotState);
+      }
+    };
+  }
+
+  StateFunc IdentState(Scanner s) {
+    return IdentStateFuncFactory(false);
+  }
+
+  StateFunc IdentOrKeywordState(Scanner s) {
+    return IdentStateFuncFactory(true);
+  }
+
   bool IsIdent(char c) {
     return Char.IsLetter(c) || Char.IsNumber(c) || c == '_';
   }
 
-  StateFunc IdentState(Scanner s) {
-    s.NextWhile(IsIdent);
-    // Have lexed Ident.
-    _toks.Add(s.Emit(Token.Type.Identifier));
-    return WhiteSpaceStateFactory(ExpressionState);
+  bool IsOperatorSymbol(char c) {
+    return c == '*' || c == '/' || c == '+' || c == '-' || c == ',' || c == '=' || c == ';';
   }
 
   StateFunc OperatorState(Scanner s) {
-    // Prefix operators
+    // General operators
     string[] ops = {
-      "*",
-      "/",
-      "+",
-      "-"
+      "*", // Multiplication
+      "/", // Division
+      "+", // Addition
+      "-", // Subtraction
+      ",", // Comma Operator
+      "=", // Assignment Operator
     };
-    s.NextWhile(Char.IsSymbol);
+    s.NextWhile(IsOperatorSymbol);
     string maybeOp = s.Buffer();
-    if (Array.IndexOf(ops, maybeOp) == -1) {
-      s.BackAll();
-      return null;
+    if (Array.IndexOf(ops, maybeOp) != -1) {
+      _toks.Add(s.Emit(Token.Type.Operator));
+      return WhiteSpaceStateFactory(ExpressionState);
+    } else {
+      if (maybeOp == ";") {
+        // Semicolon Operator terminates an expression
+        _toks.Add(s.Emit(Token.Type.StatementTerminal));
+        return WhiteSpaceStateFactory(StartState);
+      } else throw new Exception("Expected Operator, found '"+maybeOp+"'");
     }
-    _toks.Add(s.Emit(Token.Type.Operator));
-    return WhiteSpaceStateFactory(ExpressionState);
-  }
-
-  StateFunc SemiColonState(Scanner s) {
-    _toks.Add(s.Emit(Token.Type.StatementTerminal));
-    return StartState;
   }
 
   StateFunc ExpressionState(Scanner s) {
@@ -190,42 +227,32 @@ class Lexer : IEnumerable<Token> {
     if (c == '\0') {
       return null; // EOF reached
     } else if (Char.IsLetter(c)) {
-      return IdentState;
+      return IdentOrKeywordState;
     } else if (Char.IsNumber(c)) {
       return NumberState;
-    } else if (c == ';') {
-      return SemiColonState;
-    } else {
+    } else if (IsOperatorSymbol(c)) {
       return OperatorState;
+    } else throw new Exception("Unexpected character '"+c+"'");
+  }
+
+  StateFunc AsState(Scanner s) {
+    _toks.Add(s.Emit(Token.Type.Keyword));
+    return WhiteSpaceStateFactory(IdentState);
+  }
+
+  StateFunc KeywordState(Scanner s) {
+    s.NextWhile(IsIdent);
+    var str = s.Buffer();
+    switch (str) {
+      case "as":
+        return AsState;
+      default:
+        throw new Exception("Unknown keword '"+str+"'");
     }
   }
 
-  StateFunc AssignState(Scanner s) {
-    if (s.Next() == '=') {
-      _toks.Add(s.Emit(Token.Type.Operator));
-    } else return null;
-    return WhiteSpaceStateFactory(ExpressionState);
-  }
-
-  StateFunc VarIdentState(Scanner s) {
-    s.NextWhile(IsIdent);
-    if (s.Count() > 0) {
-      _toks.Add(s.Emit(Token.Type.Identifier));
-    } else return null;
-    return WhiteSpaceStateFactory(AssignState);
-  }
-
-  StateFunc VarState(Scanner s) {
-    s.NextWhile(IsIdent);
-    if (s.Buffer() == "var") {
-      _toks.Add(s.Emit(Token.Type.Keyword));
-      s.NextWhile(IsIdent);
-    } else return null;
-    return WhiteSpaceStateFactory(VarIdentState);
-  }
-
   StateFunc StartState(Scanner s) {
-    return WhiteSpaceStateFactory(VarState);
+    return WhiteSpaceStateFactory(ExpressionState);
   }
 
   void Run() {
@@ -250,6 +277,16 @@ struct SyntaxTree {
     Token Token();
   }
 
+  public class RootNode : INode {
+    Token INode.Token() {
+      throw new Exception("Root Nodes have no Tokens");
+    }
+
+    override public string ToString() {
+      return "Root";
+    }
+  }
+
   public class Node: INode {
     Token token;
 
@@ -264,6 +301,8 @@ struct SyntaxTree {
         return ReferenceNode.Factory(tok);
       } else if (tok.type == Token.Type.Operator) {
         return OperatorNode.Factory(tok);
+      } else if (tok.type == Token.Type.Keyword) {
+        return KeywordNode.Factory(tok);
       } else throw new Exception("Unknown token: "+tok);
     }
 
@@ -282,74 +321,127 @@ struct SyntaxTree {
   }
 
   public enum OperatorPrecedence {
-    Dot,
     Assignment,
+    SummationDifference,
     ProductQuotientRemainder,
-    SummationDifference
+    Dot
   };
 
-  public interface IOperatorNode {
+  public interface IOperator {
     OperatorAssociativity Associativity(); // Operator Associativity
     OperatorPrecedence Precedence(); // Operator Precedence
+    int Arguments();
   }
 
-  class SummationNode : OperatorNode, IOperatorNode {
+  class SummationNode : OperatorNode, IOperator {
     public SummationNode(Token t) : base(t) {}
 
-    OperatorAssociativity IOperatorNode.Associativity() {
+    OperatorAssociativity IOperator.Associativity() {
       return OperatorAssociativity.Left;
     }
 
-    OperatorPrecedence IOperatorNode.Precedence() {
+    OperatorPrecedence IOperator.Precedence() {
       return OperatorPrecedence.SummationDifference;
+    }
+
+    int IOperator.Arguments() {
+      return 2;
     }
   }
 
-  class DifferenceNode : OperatorNode, IOperatorNode {
+  class DifferenceNode : OperatorNode, IOperator {
     public DifferenceNode(Token t) : base(t) {}
 
-    OperatorAssociativity IOperatorNode.Associativity() {
+    OperatorAssociativity IOperator.Associativity() {
       return OperatorAssociativity.Left;
     }
 
-    OperatorPrecedence IOperatorNode.Precedence() {
+    OperatorPrecedence IOperator.Precedence() {
       return OperatorPrecedence.SummationDifference;
     }
+
+    int IOperator.Arguments() {
+      return 2;
+    }
   }
 
-  class ProductNode : OperatorNode, IOperatorNode {
+  class ProductNode : OperatorNode, IOperator {
     public ProductNode(Token t) : base(t) {}
 
-    OperatorAssociativity IOperatorNode.Associativity() {
+    OperatorAssociativity IOperator.Associativity() {
       return OperatorAssociativity.Left;
     }
 
-    OperatorPrecedence IOperatorNode.Precedence() {
+    OperatorPrecedence IOperator.Precedence() {
       return OperatorPrecedence.ProductQuotientRemainder;
+    }
+
+    int IOperator.Arguments() {
+      return 2;
     }
   }
 
-  class QuotientNode : OperatorNode, IOperatorNode {
+  class QuotientNode : OperatorNode, IOperator {
     public QuotientNode(Token t) : base(t) {}
 
-    OperatorAssociativity IOperatorNode.Associativity() {
+    OperatorAssociativity IOperator.Associativity() {
       return OperatorAssociativity.Left;
     }
 
-    OperatorPrecedence IOperatorNode.Precedence() {
+    OperatorPrecedence IOperator.Precedence() {
       return OperatorPrecedence.ProductQuotientRemainder;
+    }
+
+    int IOperator.Arguments() {
+      return 2;
     }
   }
 
-  class RemainderNode : OperatorNode, IOperatorNode {
+  class RemainderNode : OperatorNode, IOperator {
     public RemainderNode(Token t) : base(t) {}
 
-    OperatorAssociativity IOperatorNode.Associativity() {
+    OperatorAssociativity IOperator.Associativity() {
       return OperatorAssociativity.Left;
     }
 
-    OperatorPrecedence IOperatorNode.Precedence() {
+    OperatorPrecedence IOperator.Precedence() {
       return OperatorPrecedence.ProductQuotientRemainder;
+    }
+
+    int IOperator.Arguments() {
+      return 2;
+    }
+  }
+
+  public class DotNode : OperatorNode, IOperator {
+    public DotNode(Token t) : base(t) {}
+
+    OperatorAssociativity IOperator.Associativity() {
+      return OperatorAssociativity.Left;
+    }
+
+    OperatorPrecedence IOperator.Precedence() {
+      return OperatorPrecedence.Dot;
+    }
+
+    int IOperator.Arguments() {
+      return 2;
+    }
+  }
+
+  public class AssignmentNode : OperatorNode, IOperator {
+    public AssignmentNode(Token t) : base(t) {}
+
+    OperatorAssociativity IOperator.Associativity() {
+      return OperatorAssociativity.Right;
+    }
+
+    OperatorPrecedence IOperator.Precedence() {
+      return OperatorPrecedence.Assignment;
+    }
+
+    int IOperator.Arguments() {
+      return 2;
     }
   }
 
@@ -367,37 +459,37 @@ struct SyntaxTree {
         case "/":
           return new QuotientNode(tok);
         case ".":
-          return new SummationNode(tok);
+          return new DotNode(tok);
         case "=":
-          return new SummationNode(tok);
+          return new AssignmentNode(tok);
         default:
           throw new Exception("Unknown operator: "+tok);
       }
     }
   }
 
-  public interface IValueNode {
+  public interface IValue {
     object GetValue();
   }
 
-  public class IntegerNode : ValueNode, IValueNode {
+  public class IntegerNode : ValueNode, IValue {
     int val;
     public IntegerNode(Token tok, int v) : base (tok) {
       val = v;
     }
 
-    object IValueNode.GetValue() {
+    object IValue.GetValue() {
       return val;
     }
   }
 
-  public class FloatingPointNode : ValueNode, IValueNode {
+  public class FloatingPointNode : ValueNode, IValue {
     float val;
     public FloatingPointNode(Token tok, float v) : base (tok) {
       val = v;
     }
 
-    object IValueNode.GetValue() {
+    object IValue.GetValue() {
       return val;
     }
   }
@@ -420,15 +512,15 @@ struct SyntaxTree {
     }
   }
 
-  public interface IReferenceNode {
+  public interface IReference {
     object GetReferencedValue();
   }
 
-  public class IdentifierNode : ReferenceNode, IReferenceNode {
+  public class IdentifierNode : ReferenceNode, IReference {
     public IdentifierNode(Token tok) : base(tok) {}
 
-    object IReferenceNode.GetReferencedValue() {
-      return null;
+    object IReference.GetReferencedValue() {
+      throw new Exception("Unimplemented");
     }
   }
 
@@ -439,6 +531,24 @@ struct SyntaxTree {
       if (t.type == Token.Type.Identifier) {
         return new IdentifierNode(t);
       } else throw new Exception("Unknown reference: "+t);
+    }
+  }
+
+  public interface IKeyword {}
+
+  public class VarNode : KeywordNode, IKeyword {
+    public VarNode(Token t) : base(t) {}
+  }
+
+  public class KeywordNode : Node {
+    public KeywordNode(Token t) : base(t) {}
+
+    public static new KeywordNode Factory(Token t) {
+      if (t.type == Token.Type.Keyword) {
+        if (t.str == "var") {
+          return new VarNode(t);
+        } else throw new Exception("Unknown keyword: "+t);
+      } else throw new Exception("Not a keyword: "+t);
     }
   }
 
@@ -470,9 +580,7 @@ struct SyntaxTree {
 
 class Parser : IEnumerable<SyntaxTree> {
   IEnumerable<Token> _toks;
-  IEnumerator<Token> _toke;
 
-  SyntaxTree _root;
   BlockingCollection<SyntaxTree> _trees;
 
   IEnumerator IEnumerable.GetEnumerator() {
@@ -483,6 +591,18 @@ class Parser : IEnumerable<SyntaxTree> {
     return _trees.GetConsumingEnumerable().GetEnumerator();
   }
 
+  public class Exception : System.Exception {
+    SyntaxTree tree;
+
+    public Exception(SyntaxTree t, string s) : base(s) {
+      tree = t;
+    }
+
+    override public string ToString() {
+      return tree+": "+base.ToString();
+    }
+  }
+
   public Parser(IEnumerable<Token> toks) {
     _toks = toks;
     _trees = new BlockingCollection<SyntaxTree>();
@@ -491,42 +611,101 @@ class Parser : IEnumerable<SyntaxTree> {
 
   delegate StateFunc StateFunc();
 
-  StateFunc ExpressionState() {
-    // Shunting Yard
-    var output = new Stack<SyntaxTree>();
-    var operators = new Stack<SyntaxTree>();
+  interface INode {
+    SyntaxTree GrabChildren(Stack<SyntaxTree> t);
+  }
 
-    foreach(var t in _toks) {
+  class Node : INode {
+    public SyntaxTree tree {get;}
+    int children;
+    public Node(SyntaxTree t) {
+      tree = t;
+      if (t.node as SyntaxTree.IOperator != null) {
+        children = (t.node as SyntaxTree.IOperator).Arguments();
+      } else throw new Exception(t, "Not an operator: "+t);
+    }
 
-      if (t.type == Token.Type.Integer || t.type == Token.Type.FloatingPoint || t.type == Token.Type.Identifier) {
-        output.Push(new SyntaxTree(SyntaxTree.Node.Factory(t)));
-      } else if (t.type == Token.Type.Operator) {
-        var tree = new SyntaxTree(SyntaxTree.Node.Factory(t));
-        while (operators.Count > 0 && (tree.node as SyntaxTree.IOperatorNode).Precedence() > (operators.Peek().node as SyntaxTree.IOperatorNode).Precedence()) {
-          var st = new SyntaxTree(SyntaxTree.Node.Factory(t));
-          foreach (var tok in output.Take(2).Reverse()) {
-            output.Pop(); // does not remove with take
-            st.Add(tok);
-          }
-          output.Push(st);
+    SyntaxTree INode.GrabChildren(Stack<SyntaxTree> t) {
+      if (t.Count() >= children) {
+        foreach (var tok in t.Take(children).Reverse()) {
+          t.Pop(); // does not remove with take
+          tree.Add(tok);
         }
-        operators.Push(tree);
+      } else throw new Exception(tree, "Not enough arguments (expected "+children+")");
+      return tree;
+    }
+  }
+
+  class ShuntingYard {
+    Stack<SyntaxTree> output, operators;
+    Parser _parser;
+
+    public ShuntingYard(Parser p) {
+      _parser = p;
+      output = new Stack<SyntaxTree>();
+      operators = new Stack<SyntaxTree>();
+    }
+
+    public void Shunt() {
+      for (;;) {
+        foreach(var t in _parser._toks) {
+          if (t.type == Token.Type.StatementTerminal) {
+            break;
+          } else if (t.type == Token.Type.Integer || t.type == Token.Type.FloatingPoint || t.type == Token.Type.Identifier) {
+            output.Push(new SyntaxTree(SyntaxTree.Node.Factory(t)));
+          } else if (t.type == Token.Type.Operator) {
+            var tree = new SyntaxTree(SyntaxTree.Node.Factory(t));
+            // Move lesser operators off the stack,
+            // place them on the output stack with the correct
+            // children pulled from the top of output.
+            while (operators.Count() > 0) {
+              var oOp = tree.node as SyntaxTree.IOperator;
+              var op = operators.Peek().node as SyntaxTree.IOperator;
+              if ((oOp.Associativity() == SyntaxTree.OperatorAssociativity.Left
+                  && oOp.Precedence() <= op.Precedence())
+                || (oOp.Associativity() == SyntaxTree.OperatorAssociativity.Right
+                  && oOp.Precedence() < op.Precedence())) {
+                output.Push((new Node(operators.Pop()) as INode).GrabChildren(output));
+              } else break;
+            }
+            operators.Push(tree);
+          }
+        }
+        // Remove all remaining operators from the stack,
+        // placing them on the output with the correct
+        // children pulled from the top of output.
+        // output: 1, 2; operators: +; => output: +{1,2};
+        while (operators.Count() > 0) {
+          output.Push((new Node(operators.Pop()) as INode).GrabChildren(output));
+        }
+        if (output.Count() > 0) {
+          while (output.Count() > 0) _parser._trees.Add(output.Pop());
+        } else break;
       }
     }
-    while (operators.Count > 0) {
-      var st = operators.Pop();
-      foreach (var tree in output.Take(2).Reverse()) {
-        output.Pop(); // does not remove with take
-        st.Add(tree);
-      }
-      output.Push(st);
+
+    SyntaxTree WithChildren(SyntaxTree st, int children) {
+      if (output.Count() >= children) {
+        foreach (var tok in output.Take(children).Reverse()) {
+          output.Pop(); // does not remove with take
+          st.Add(tok);
+        }
+      } else throw new Exception(st, "Not enough arguments (expected "+children+")");
+      return st;
     }
-    foreach (var t in output) _trees.Add(t);
+  }
+
+  StateFunc ExpressionState() {
+    new ShuntingYard(this).Shunt();
     return null;
   }
 
+  StateFunc StartState() {
+    return ExpressionState;
+  }
+
   public void Run() {
-    StateFunc func = ExpressionState;
+    StateFunc func = StartState;
     while (func != null) func = func();
     _trees.CompleteAdding();
   }
